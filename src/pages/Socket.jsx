@@ -211,7 +211,7 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
   useEffect(() => {
     console.log("MOUNTED");
 
-    socketRef.current = io("https://videocallingbackend-ftll.onrender.com/");
+    socketRef.current = io("59.91.172.63:5000");
 
     // Step 1: Create device
     deviceRef.current = new mediasoupClient.Device();
