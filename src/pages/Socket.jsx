@@ -211,7 +211,7 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
   useEffect(() => {
     console.log("MOUNTED");
 
-    socketRef.current = io("https://videocallingbackend-ftll.onrender.com");
+    socketRef.current = io("http://videocallingbackend-ftll.onrender.com/");
 
     // Step 1: Create device
     deviceRef.current = new mediasoupClient.Device();
@@ -233,33 +233,51 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
     // Step 3: Load device
     socketRef.current.on("rtp-capabilities", async (caps) => {
       try {
+        if(!caps)
+        {
+          console.log("server not sent rtpCapabilities");
+        }
         await deviceRef.current.load({ routerRtpCapabilities: caps });
-        console.log("Device loaded successfully");
-
+        console.log("Device loaded: ",deviceRef.current.loaded);
         // Step 4: Request recv transport params
         socketRef.current.emit("create-recv-transport", async (params) => {
+
+          if(!params)console.log("no params");
+
           console.log("Recv params:", params);
 
-          const recvTransport = deviceRef.current.createRecvTransport(params);
-          recvTransportRef.current = recvTransport;
+          //recieve transport created
+          recvTransportRef.current = deviceRef.current.createRecvTransport(params);
+
 
           console.log("RecvTransport created successfully");
 
           recvTransportRef.current.on(
             "connect",
-            ({ dtlsParameters }, callback, errback) => {
-              socketRef.current.emit(
-                "connect-recv-transport",
-                { dtlsParameters },
-                (response) => {
-                  if (response?.error)
-                    {
-                      console.log("error connecting recv transport",response.error);
-                      return errback(response.error);
-                    } 
-                  callback();
-                }
-              );
+            async ({ dtlsParameters }, callback, errback) => {
+              try{
+                console.log("Connecting recv Transport");
+                await new Promise((resolve,reject)=>{
+                  socketRef.current.emit(
+                    "connect-recv-transport",
+                    { dtlsParameters },
+                    (res) => {
+                      if (res?.error)
+                        {
+                          console.log("error connecting recv transport",res.error);
+                          return reject(res.error);
+                        } 
+                      resolve(res);
+                    }
+                  );
+                })
+                callback();
+                console.log("State of recv transport",recvTransportRef.current.connectionState);
+              }
+              catch (error) {
+                console.error("Error connecting recv transport:", error);
+                errback(error);
+              }
             }
           );
           // Add error handling for the transport
@@ -268,9 +286,22 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
           if (state === "failed" || state === "disconnected") {
             console.error("recv transport connection failed");
           }
-        });
-        recvTransportRef.current.on("iceconnectionstatechange", (state) => {
-          console.log("Recv transport ICE state:", state);
+        });     
+
+        recvTransportRef.current.on("connectionstatechange", (state) => {
+          console.log("recv transport:", state);
+        
+          if (state === "connected") {
+            console.log("Transport ready → now attach consumer streams");
+        
+            // Now update UI
+            setRemoteStreams([...remoteStreamsRef.current]);
+        
+            // Resume all consumers
+            consumersRef.current.forEach(({ consumer }) => {
+              socketRef.current.emit("consumerResume", { consumerId: consumer.id });
+            });
+          }
         });
         
 
@@ -285,11 +316,12 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
       }
     });
 
+    
+    
     socketRef.current.on("existingProducers", async ({ producerIds }) => {
       producerIds.forEach((id) => {
         console.log("existing ones", id);
-        socketRef.current.emit(
-          "consume",
+        socketRef.current.emit("consume",
           { id, rtpCapabilities: deviceRef.current.rtpCapabilities },
           async (data) => {
             const consumer = await recvTransportRef.current.consume({
@@ -314,10 +346,6 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
               stream,
             });
             setRemoteStreams([...remoteStreamsRef.current]); // force re-render
-
-            socketRef.current.emit("consumerResume", {
-              consumerId: consumer.id,
-            });
           }
         );
       });
@@ -327,13 +355,11 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
     socketRef.current.on("send-transport-created", async (params) => {
       try {
         // Create send transport
-        sendTransportRef.current =
-          deviceRef.current.createSendTransport(params);
+        sendTransportRef.current = deviceRef.current.createSendTransport(params);
         console.log("Send transport created");
 
         // Handle produce event - CRITICAL: This connects client produce to server
-        sendTransportRef.current.on(
-          "produce",
+        sendTransportRef.current.on("produce",
           async (parameters, callback, errback) => {
             try {
               console.log("Produce event triggered:", parameters.kind);
@@ -367,20 +393,28 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
         sendTransportRef.current.on(
           "connect",
           async ({ dtlsParameters }, callback, errback) => {
-            try {
               console.log("Send transport connecting...");
               // Signal local DTLS parameters to the server side transport
-              await socketRef.current.emit("transport-connect", {
-                dtlsParameters: dtlsParameters,
+              try{
+              await new Promise((resolve,reject)=>{
+                   socketRef.current.emit("transport-connect",{ dtlsParameters },
+                    (res) => {
+                        if (res?.error) {
+                          return reject(res.error); // stop here
+                        }
+                        resolve();
+                    }
+                  );
+                });
+                callback(); // only call if no error
+                console.log("Send transport connected successfully");
+              }
+                catch (err) {
+                console.error("Unexpected error in transport-connect callback:", err);
+                errback(err);
+              }
+
               });
-              console.log("Send transport connected successfully");
-              callback();
-            } catch (error) {
-              console.error("Error connecting transport:", error);
-              errback(error);
-            }
-          }
-        );
 
         // Add error handling for the transport
         sendTransportRef.current.on("connectionstatechange", (state) => {
@@ -437,10 +471,17 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
             producerId,
             stream,
           });
-          setRemoteStreams([...remoteStreamsRef.current]); // force re-render
           // Required step
-          await socketRef.current.emit("consumerResume", {
-            consumerId: consumer.id,
+          recvTransportRef.current.on("connectionstatechange", (state) => {
+            console.log("recv transport:", state);
+          
+            if (state === "connected") {
+              console.log("Transport ready → now attach consumer streams");
+          
+              // Now update UI
+                setRemoteStreams([...remoteStreamsRef.current]);
+                socketRef.current.emit("consumerResume", { consumerId: consumer.id });
+            }
           });
         }
       );
@@ -622,7 +663,6 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
           />
         ))}
       </div>
-      <button onClick={troubleshootConsumers}>Debug all</button>
     </div>
   );
 }
