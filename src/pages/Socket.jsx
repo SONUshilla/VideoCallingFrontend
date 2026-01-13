@@ -1,371 +1,582 @@
 import { io } from "socket.io-client";
 import React, { useEffect, useRef, useState } from "react";
 import * as mediasoupClient from "mediasoup-client";
-
+import Draggable from "react-draggable";
+import VideoElement from "../components/VideoElement";
+import VideoLayout from "../components/VideoLayout";
+import ControlBar from "../components/ControlBar";
+import { useSocket } from "../context/SocketContext.jsx";
+import { useCallback } from "react";
+import { useLoginContext } from "../context/LoginContext.jsx";
+import {useNavigate} from "react-router-dom";
+import ChatBar from "../components/ChatBar.jsx";
+import { getUserScreen } from "../utils/ScreenShare.jsx";
+import ParticipantsBar from "../components/Participants.jsx";
+import ScreenShareLayout from "../components/ScreenshareLayout.jsx";
+import { useChat } from "../hooks/UseChat.js";
 function Socket() {
   const userVideoRef = useRef(null);
   const remoteStreamsRef = useRef([]);
   const [remoteStreams, setRemoteStreams] = useState([]);
-  const socketRef = useRef(null);
   const deviceRef = useRef(null);
   const sendTransportRef = useRef(null);
   const recvTransportRef = useRef(null);
   const producersRef = useRef([]); // Track producers for cleanup
   const consumersRef = useRef([]);
-// Add this state to track troubleshooting results
-const [debugResults, setDebugResults] = useState([]);
+  const localStreamRef = useRef(null);
+  const currentStreams = new Map();
+  const audioProducerRef = useRef(null);
+  const videoProducerRef = useRef(null);
+  const currentConsumers = new Map();
+  const [userDetails, setUserDetails] = useState(new Map());
+  const [createRecvTransport, setCreatingRecvTransport] = useState(false);
+  const [localStream, setLocalStream] = useState();
+  const [socketId, setSocketId] = useState(null);
+  const [ActiveSpeaker, setActiveSpeaker] = useState();
+  const [isAudioEnabled, setIsAudioEnabled] = useState(true);
+  const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [participantsCount, setParticipantsCount] = useState(1);
+  const [isChatOpen,setChatOpen]=useState(false);
+  const [isParticipantsBar,setIsParicipantsBar]=useState(false);
+  const [firstScreenShareStream,setFirstScreenShareStream]=useState(null);
+  const [screenSharerSocketId,setScreenShareSocketId]=useState(null);
+  const [isLocalScreenSharing,setIsLocalScreenSharing]=useState(false);
+  let socketRef = useSocket();
+  const navigate=useNavigate();
+  const [socket, setSocket] = useState(null);
+  const {username,profilePic}=useLoginContext();
 
-// Main troubleshooting function
-const troubleshootConsumers = async () => {
-  const results = [];
-  console.log("this is the current state of receive transport",recvTransportRef.current.connectionState)
-  if (!consumersRef.current || consumersRef.current.length === 0) {
-    results.push({
-      type: 'error',
-      message: 'No consumers found in consumersRef'
-    });
-    setDebugResults(results);
-    return;
-  }
+  const screenSharesMap = new Map(); // Only for screens
+  // Example user data
+  const currentUser = {
+    id: socketId,
+    name: username,
+    profilePic: profilePic // Optional profile picture URL
+  };
+  const chat = useChat({ currentUser, userDetails });
 
-  console.group('🔍 Mediasoup Consumers Troubleshooting');
+    // Comprehensive cleanup function
+    const performCleanup = useCallback(async () => {
+      console.log("Performing comprehensive cleanup...");
   
-  for (const [index, consumerInfo] of consumersRef.current.entries()) {
-    const { producerId, consumer } = consumerInfo;
-    
-    console.group(`Consumer ${index} (Producer: ${producerId})`);
-    
-    const consumerResult = await checkSingleConsumer(consumer, producerId, index);
-    results.push(consumerResult);
-    
-    console.groupEnd();
-  }
+      try {
+        // Close all producers
+        if (audioProducerRef.current) {
+          try {
+            audioProducerRef.current.close();
+          } catch (err) {
+            console.warn("Error closing audio producer:", err);
+          }
+          audioProducerRef.current = null;
+        }
   
-  console.groupEnd();
-  setDebugResults(results);
-};
+        if (videoProducerRef.current) {
+          try {
+            videoProducerRef.current.close();
+          } catch (err) {
+            console.warn("Error closing video producer:", err);
+          }
+          videoProducerRef.current = null;
+        }
+  
+        // Close all producers in the array
+        producersRef.current.forEach((producer) => {
+          try {
+            producer.close();
+          } catch (err) {
+            console.warn("Error closing producer:", err);
+          }
+        });
+        producersRef.current = [];
+  
+        // Close all consumers
+        consumersRef.current.forEach(({ consumer }) => {
+          try {
+            consumer.close();
+          } catch (err) {
+            console.warn("Error closing consumer:", err);
+          }
+        });
+        consumersRef.current = [];
+  
+        // Close transports
+        if (sendTransportRef.current) {
+          try {
+            sendTransportRef.current.removeAllListeners();
+            sendTransportRef.current.close();
+          } catch (err) {
+            console.warn("Error closing send transport:", err);
+          }
+          sendTransportRef.current = null;
+        }
+  
+        if (recvTransportRef.current) {
+          try {
+            recvTransportRef.current.removeAllListeners();
+            recvTransportRef.current.close();
+          } catch (err) {
+            console.warn("Error closing recv transport:", err);
+          }
+          recvTransportRef.current = null;
+        }
+  
+        // Stop local stream tracks
+        if (localStream) {
+          localStream.getTracks().forEach(track => {
+            try {
+              track.stop();
+              track.enabled = false;
+            } catch (err) {
+              console.warn("Error stopping local track:", err);
+            }
+          });
+          setLocalStream(null);
+        }
+  
+        // Stop remote stream tracks
+        remoteStreamsRef.current.forEach(remoteStream => {
+          if (remoteStream.stream) {
+            remoteStream.stream.getTracks().forEach(track => {
+              try {
+                track.stop();
+                track.enabled = false;
+              } catch (err) {
+                console.warn("Error stopping remote track:", err);
+              }
+            });
+          }
+        });
+  
+        // Clear maps and arrays
+        currentStreams.clear();
+        currentConsumers.clear();
+        remoteStreamsRef.current = [];
+        setRemoteStreams([]);
+        setUserDetails(new Map());
+        // Reset device
+        deviceRef.current = null;
+  
+        // Notify server
+        if (socket) {
+          socket.emit("leftMeeting");
+        }
+  
+        console.log("Cleanup completed successfully");
+      } catch (error) {
+        console.error("Error during cleanup:", error);
+      }
+    }, [localStream, socket]);
 
-// Function to check individual consumer
-const checkSingleConsumer = async (consumer, producerId, index) => {
-  const result = {
-    producerId,
-    index,
-    consumerId: consumer.id,
-    kind: consumer.kind,
-    status: 'unknown',
-    issues: [],
-    stats: null
+  // Enhanced media control functions
+  const toggleAudio = async () => {
+    if (isAudioEnabled) {
+      await disableAudio();
+    } else {
+      await enableAudio();
+    }
+    setIsAudioEnabled(!isAudioEnabled);
   };
 
-  try {
-    // Basic consumer checks
-    console.log('1. ✅ Basic Consumer Checks');
-    console.log('   ID:', consumer.id);
-    console.log('   Producer ID:', producerId);
-    console.log('   Kind:', consumer.kind);
-    console.log('   Paused:', consumer.paused);
-    console.log('   Closed:', consumer.closed);
-
-    if (consumer.closed) {
-      result.issues.push('Consumer is closed');
-      result.status = 'error';
-    }
-
-    if (consumer.paused) {
-      result.issues.push('Consumer is paused');
-      result.status = 'warning';
-    }
-
-    // Track checks
-    console.log('2. 📡 Track Checks');
-    if (consumer.track) {
-      console.log('   ✅ Track exists');
-      console.log('   Track ID:', consumer.track.id);
-      console.log('   Track kind:', consumer.track.kind);
-      console.log('   Track readyState:', consumer.track.readyState);
-      console.log('   Track muted:', consumer.track.muted);
-
-      if (consumer.track.readyState === 'ended') {
-        result.issues.push('Track has ended');
-        result.status = 'error';
-      }
-
-      if (consumer.track.muted) {
-        result.issues.push('Track is muted');
-        result.status = 'warning';
-      }
+  const toggleVideo = async () => {
+    if (isVideoEnabled) {
+      await disableVideo();
     } else {
-      console.log('   ❌ No track found');
-      result.issues.push('No track associated with consumer');
-      result.status = 'error';
+      await enableVideo();
     }
+    setIsVideoEnabled(!isVideoEnabled);
+  };
 
-    // Transport checks
-    console.log('3. 🚚 Transport Checks');
-    if (consumer.transport) {
-      console.log('   Transport state:', consumer.transport.state);
-      console.log('   Transport connection state:', consumer.transport.connectionState);
-
-      if (consumer.transport.connectionState !== 'connected') {
-        result.issues.push(`Transport not connected (state: ${consumer.transport.connectionState})`);
-        result.status = 'error';
-      }
-    } else {
-      console.log('   ❌ No transport found');
-      result.issues.push('No transport associated with consumer');
-      result.status = 'error';
-    }
-
-    // Statistics check
-    console.log('4. 📊 Statistics Check');
+  let screenProducer = useRef(null);
+  let screenTrack =  useRef(null);
+  
+  const toggleScreenShare = async () => {
     try {
-      const stats = await consumer.getStats();
-      const inboundRtp = Array.from(stats.values()).find(stat => stat.type === 'inbound-rtp');
-      
-      if (inboundRtp) {
-        console.log('   ✅ Inbound RTP stats found');
-        console.log('   Bytes received:', inboundRtp.bytesReceived);
-        console.log('   Packets received:', inboundRtp.packetsReceived);
-        console.log('   Packets lost:', inboundRtp.packetsLost);
-        console.log('   Jitter:', inboundRtp.jitter);
 
-        result.stats = {
-          bytesReceived: inboundRtp.bytesReceived,
-          packetsReceived: inboundRtp.packetsReceived,
-          packetsLost: inboundRtp.packetsLost,
-          jitter: inboundRtp.jitter
+      if (!isScreenSharing) {
+        if(firstScreenShareStream)
+          {
+            
+          }
+        const stream = await getUserScreen();
+        setFirstScreenShareStream(stream);
+        if (!stream) return;
+  
+        screenTrack.current = stream.getVideoTracks()[0];
+  
+        screenProducer.current = await sendTransportRef.current.produce({
+          track: screenTrack.current,
+          appData: { mediaTag: "screen",socketId:socketId }
+        });
+        producersRef.current.push(screenProducer.current);
+        // Auto-stop if user clicks "Stop sharing"
+        screenTrack.current.onended = () => {
+          stopScreenShare();
         };
-
-        if (inboundRtp.bytesReceived === 0) {
-          result.issues.push('No data received (0 bytes)');
-          result.status = result.status === 'unknown' ? 'error' : result.status;
-        } else {
-          console.log('   ✅ Data is flowing');
-          if (result.status === 'unknown') result.status = 'healthy';
-        }
+  
+        setIsScreenSharing(true);
+        setIsLocalScreenSharing(true);
       } else {
-        console.log('   ❌ No inbound RTP stats found');
-        result.issues.push('No inbound RTP statistics available');
-        result.status = 'error';
+        stopScreenShare();
       }
-    } catch (statsError) {
-      console.log('   ❌ Error getting stats:', statsError);
-      result.issues.push(`Failed to get statistics: ${statsError.message}`);
-      result.status = 'error';
+    } catch (err) {
+      console.error("Screen share error", err);
     }
-
-    // Video element check (for video consumers)
-    if (consumer.kind === 'video') {
-      console.log('5. 📹 Video Element Check');
-      const videoElement = document.getElementById(`remote-video-${producerId}`) || 
-                          document.getElementById('remote-video') ||
-                          document.querySelector('video');
-      
-      if (videoElement) {
-        console.log('   ✅ Video element found');
-        console.log('   Video readyState:', videoElement.readyState);
-        console.log('   Video paused:', videoElement.paused);
-        console.log('   Video srcObject:', videoElement.srcObject);
-
-        if (!videoElement.srcObject) {
-          result.issues.push('Video element has no srcObject');
-          result.status = 'error';
-        }
-
-        // Check if video can play
-        try {
-          await videoElement.play();
-          console.log('   ✅ Video can play');
-        } catch (playError) {
-          console.log('   ❌ Video play failed:', playError);
-          result.issues.push(`Video play failed: ${playError.message}`);
-          result.status = 'error';
-        }
-      } else {
-        console.log('   ❌ No video element found');
-        result.issues.push('No video element found for video consumer');
-        result.status = 'error';
-      }
+  };
+  const stopScreenShare = () => {
+    const producer = screenProducer.current;
+  
+    if (producer) {
+      socket.emit("screenShareStopped", { producerId:producer.id });
+      producer.close(); 
+      screenProducer.current = null;
     }
+  
+    if (screenTrack) {
+      screenTrack.current.stop();
+      screenTrack.current= null;
+    }
+  
+    setFirstScreenShareStream(null);
+    setIsScreenSharing(false);
+    setIsLocalScreenSharing(false);
+  };
+  
+  
+  
+  
 
-  } catch (error) {
-    console.log('   ❌ Error checking consumer:', error);
-    result.issues.push(`Check failed: ${error.message}`);
-    result.status = 'error';
-  }
+  const leaveCall = () => {
+    // Implement leave call logic
+    console.log("Leaving call...");
+    // Add your cleanup logic here
+    socket.emit("leftMeeting");
+    navigate("/dashboard");
+  };
 
-  // Final status
-  if (result.status === 'unknown') {
-    result.status = 'healthy';
-  }
+  const toggleParticipants = () => {
+    setIsParicipantsBar(!isParticipantsBar);
+  };
 
-  console.log(`6. 🎯 Final Status: ${result.status.toUpperCase()}`);
-  if (result.issues.length > 0) {
-    console.log('   Issues found:', result.issues);
-  } else {
-    console.log('   ✅ No issues detected');
-  }
+  const toggleChat = () => {
+    setChatOpen(!isChatOpen);
+  };
 
-  return result;
-};
+  // Update participants count when remote streams change
   useEffect(() => {
-    console.log("MOUNTED");
+    setParticipantsCount(userDetails.size + 1); // +1 for local user
+  }, [userDetails]);
 
-    socketRef.current = io("59.91.172.63:5000");
+  // Disable video - pause both track AND producer
+  function disableVideo() {
+    if (localStream) {
+      const stream = localStream;
+      const videoTracks = stream.getVideoTracks();
+
+      // Disable local track
+      videoTracks.forEach((track) => {
+        track.enabled = false;
+        console.log("Video track disabled locally");
+      });
+
+      // Pause SFU producer (this will trigger the observer events)
+      if (videoProducerRef.current) {
+        console.log("Pausing video producer...");
+        // let server know
+        socket.emit("producer-paused", {
+          producerId: videoProducerRef.current.id,
+          kind: videoProducerRef.current.kind,
+        });
+        videoProducerRef.current.pause();
+        console.log("Video producer paused - server should see 'pause' event");
+      }
+    }
+  }
+
+  // Enable video - resume both track AND producer
+  function enableVideo() {
+    if (localStream) {
+      const stream = localStream;
+      const videoTracks = stream.getVideoTracks();
+
+      // Enable local track
+      videoTracks.forEach((track) => {
+        track.enabled = true;
+        console.log("Video track enabled locally");
+      });
+      socket.emit("producer-resume", {
+        producerId: videoProducerRef.current.id,
+        kind: videoProducerRef.current.kind,
+      });
+
+      // Resume SFU producer (this will trigger the observer events)
+      if (videoProducerRef.current) {
+        console.log("Resuming video producer...");
+        videoProducerRef.current.resume();
+        console.log(
+          "Video producer resumed - server should see 'resume' event"
+        );
+      }
+    }
+  }
+
+  // Disable audio (microphone active but no audio sent)
+  function disableAudio() {
+    if (localStream) {
+      const stream = localStream;
+      const audioTracks = stream.getAudioTracks();
+      if (audioProducerRef.current) audioProducerRef.current.pause();
+
+      socket.emit("producer-paused", {
+        producerId: audioProducerRef.current.id,
+        kind: audioProducerRef.current.kind,
+      });
+      audioTracks.forEach((track) => {
+        track.enabled = false; // Disables the track but doesn't release hardware
+        console.log("Audio disabled");
+      });
+    }
+  }
+
+  function enableAudio() {
+    if (localStream) {
+      const stream = localStream;
+      const audioTracks = stream.getAudioTracks();
+
+      if (audioProducerRef.current) audioProducerRef.current.resume();
+
+      socket.emit("producer-resume", {
+        producerId: audioProducerRef.current.id,
+        kind: audioProducerRef.current.kind,
+      });
+
+      audioTracks.forEach((track) => {
+        track.enabled = true;
+        console.log("Audio enabled");
+      });
+    }
+  }
+
+  useEffect(() => {
+    // Wait until socket is initialized
+    if (!socketRef) return;
+    setSocket(socketRef);
+  }, [socketRef]);
+
+  useEffect(() => {
+    if (!socket) return;
+
+    console.log("Connected to server");
 
     // Step 1: Create device
     deviceRef.current = new mediasoupClient.Device();
 
+    //get-exisiting users present in the meeting
+    socket.emit("get-existing-users");
+
     // Step 2: Ask server for RTP caps
-    socketRef.current.on("connect", () => {
-      console.log("Connected to server");
-      socketRef.current.emit("get-rtp-capabilities");
+    socket.emit("get-rtp-capabilities");
+
+    
+
+    setSocketId(socket.id);
+
+    socket.on("existingUsers", ({ existingUsers }) => {
+      setUserDetails(prev => {
+        const newMap = new Map(prev);
+    
+        existingUsers.forEach(user => {
+          const existing = newMap.get(user.socketId) || {};
+          if (!existing.stream) {
+            let stream = currentStreams.get(user.socketId);
+            if (!stream) {
+              stream = new MediaStream();
+              currentStreams.set(user.socketId, stream);
+            }
+            existing.stream = stream; // <-- THIS is the correct assignment
+          }
+          
+          newMap.set(user.socketId, {
+            socketId: user.socketId,
+            name: user.name || existing.name || 'Unknown',
+            profilePic: user.profilePic || existing.profilePic || null,
+            stream: existing.stream ,
+          });
+        });
+    
+        return newMap;
+      });
     });
 
-    socketRef.current.on("disconnect", () => {
-      console.log("Disconnected from server");
-    });
 
-    socketRef.current.on("error", (error) => {
-      console.error("Socket error:", error);
-    });
 
     // Step 3: Load device
-    socketRef.current.on("rtp-capabilities", async (caps) => {
+    socket.on("rtp-capabilities", async (caps) => {
       try {
-        if(!caps)
-        {
+        if (!caps) {
           console.log("server not sent rtpCapabilities");
         }
         await deviceRef.current.load({ routerRtpCapabilities: caps });
-        console.log("Device loaded: ",deviceRef.current.loaded);
+        console.log("Device loaded: ", deviceRef.current.loaded);
+
         // Step 4: Request recv transport params
-        socketRef.current.emit("create-recv-transport", async (params) => {
-
-          if(!params)console.log("no params");
-
+        socket.emit("create-recv-transport", async (params) => {
+          if (!params) console.log("no params");
           console.log("Recv params:", params);
+          setCreatingRecvTransport(true);
 
           //recieve transport created
-          recvTransportRef.current = deviceRef.current.createRecvTransport(params);
-
-
+          recvTransportRef.current =deviceRef.current.createRecvTransport(params);
           console.log("RecvTransport created successfully");
-
+          socket.emit("get-existing-producers");
           recvTransportRef.current.on(
             "connect",
             async ({ dtlsParameters }, callback, errback) => {
-              try{
+              try {
                 console.log("Connecting recv Transport");
-                await new Promise((resolve,reject)=>{
-                  socketRef.current.emit(
+                await new Promise((resolve, reject) => {
+                  socket.emit(
                     "connect-recv-transport",
                     { dtlsParameters },
                     (res) => {
-                      if (res?.error)
-                        {
-                          console.log("error connecting recv transport",res.error);
-                          return reject(res.error);
-                        } 
+                      if (res?.error) {
+                        console.log(
+                          "error connecting recv transport",
+                          res.error
+                        );
+                        return reject(res.error);
+                      }
                       resolve(res);
                     }
                   );
-                })
+                });
                 callback();
-                console.log("State of recv transport",recvTransportRef.current.connectionState);
-              }
-              catch (error) {
+                console.log(
+                  "State of recv transport",
+                  recvTransportRef.current.connectionState
+                );
+              } catch (error) {
                 console.error("Error connecting recv transport:", error);
                 errback(error);
+              } finally {
+                setCreatingRecvTransport(false);
               }
             }
           );
-          // Add error handling for the transport
-        recvTransportRef.current.on("connectionstatechange", (state) => {
-          console.log("Recieve transport state:", state);
-          if (state === "failed" || state === "disconnected") {
-            console.error("recv transport connection failed");
-          }
-        });     
+ 
 
-        recvTransportRef.current.on("connectionstatechange", (state) => {
-          console.log("recv transport:", state);
-        
-          if (state === "connected") {
-            console.log("Transport ready → now attach consumer streams");
-        
-            // Now update UI
-            setRemoteStreams([...remoteStreamsRef.current]);
-        
-            // Resume all consumers
-            consumersRef.current.forEach(({ consumer }) => {
-              socketRef.current.emit("consumerResume", { consumerId: consumer.id });
-            });
-          }
-        });
-        
+          recvTransportRef.current.on("connectionstatechange", (state) => {
+            console.log("Recieve transport state:", state);
+            if (state === "failed" || state === "disconnected") {
+              console.error("recv transport connection failed");
+            }
+            if (state === "connected") {
+              console.log("Transport ready → now attach consumer streams");
 
-        recvTransportRef.current.on("close", () => {
-          console.log("Send transport closed");
+              // Now update UI
+              setRemoteStreams([...remoteStreamsRef.current]);
+
+              // Resume all consumers
+              consumersRef.current.forEach(({ consumer }) => {
+                socket.emit("consumerResume", { consumerId: consumer.id });
+              });
+            }
+          });
+
+          recvTransportRef.current.on("close", () => {
+            console.log("Send transport closed");
+          });
         });
-        });
-        socketRef.current.emit("create-send-transport");
-        socketRef.current.emit("get-existing-producers");
+        socket.emit("create-send-transport");
+        
       } catch (error) {
         console.error("Error loading device:", error);
       }
     });
+    
 
-    
-    
-    socketRef.current.on("existingProducers", async ({ producerIds }) => {
-      producerIds.forEach((id) => {
-        console.log("existing ones", id);
-        socketRef.current.emit("consume",
-          { id, rtpCapabilities: deviceRef.current.rtpCapabilities },
+    socket.on("existingProducers", async ({ producers }) => {
+      // 1. ADD appData to the destructuring here 👇
+      producers.forEach(({ id, socketId, isPaused}) => {
+      socket.emit("consume",
+          {
+            rtpCapabilities: deviceRef.current.rtpCapabilities,
+            id: id,
+          },
           async (data) => {
+            // 2. Use the appData from the loop (or fallback to data.appData)
             const consumer = await recvTransportRef.current.consume({
               id: data.id,
               producerId: data.producerId,
               kind: data.kind,
               rtpParameters: data.rtpParameters,
-            });
+              appData: data.appData , 
+            });    
+            currentConsumers.set(id, consumer);
             consumersRef.current.push({
               producerId:id,
               consumer,
+              appData: consumer.appData 
             });
-            console.log("cosumer created");
-  
+    
             const { track } = consumer;
-  
-            let stream = new MediaStream();
-  
+            consumer.track.enabled = !isPaused;
+    
+            // 3. Now this check will work because consumer.appData is populated
+            const isScreen = consumer.appData?.mediaTag === "screen";
+    
+            // ... rest of your logic ...
+            const mapToUse = isScreen ? screenSharesMap : currentStreams;
+            const streamKey = isScreen ? `${socketId}-screen` : socketId;
+    
+            let stream = mapToUse.get(socketId);
+            if (!stream) {
+              stream = new MediaStream();
+              mapToUse.set(streamKey, stream);
+    
+              remoteStreamsRef.current.push({
+                socketId,
+                stream,
+                type: isScreen ? "screen" : "camera",
+              });
+            }
+            if (isScreen) {
+              setFirstScreenShareStream(stream);
+              setScreenShareSocketId(socketId);
+            }
+    
             stream.addTrack(track);
-            remoteStreamsRef.current.push({
-              producerId:id,
-              stream,
-            });
-            setRemoteStreams([...remoteStreamsRef.current]); // force re-render
+            stream.dispatchEvent(new MediaStreamTrackEvent("addtrack", { track }));
+    
+            if (recvTransportRef.current.connectionState === "connected") {
+              setRemoteStreams([...remoteStreamsRef.current]);
+              console.log(
+                `Resuming consumer for ${consumer.kind} (${isScreen ? "SCREEN" : "CAMERA"})`
+              );
+              socket.emit("consumerResume", { consumerId: consumer.id });
+            }
           }
         );
       });
     });
 
     // Step 4: Create send transport
-    socketRef.current.on("send-transport-created", async (params) => {
+    socket.on("send-transport-created", async (params) => {
       try {
         // Create send transport
-        sendTransportRef.current = deviceRef.current.createSendTransport(params);
+        sendTransportRef.current =
+          deviceRef.current.createSendTransport(params);
         console.log("Send transport created");
 
         // Handle produce event - CRITICAL: This connects client produce to server
-        sendTransportRef.current.on("produce",
+        sendTransportRef.current.on(
+          "produce",
           async (parameters, callback, errback) => {
             try {
               console.log("Produce event triggered:", parameters.kind);
 
               // Signal the server to create a producer
-              socketRef.current.emit(
+              socket.emit(
                 "produce",
                 {
                   transportId: sendTransportRef.current.id,
@@ -393,28 +604,28 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
         sendTransportRef.current.on(
           "connect",
           async ({ dtlsParameters }, callback, errback) => {
-              console.log("Send transport connecting...");
-              // Signal local DTLS parameters to the server side transport
-              try{
-              await new Promise((resolve,reject)=>{
-                   socketRef.current.emit("transport-connect",{ dtlsParameters },
-                    (res) => {
-                        if (res?.error) {
-                          return reject(res.error); // stop here
-                        }
-                        resolve();
-                    }
-                  );
+            console.log("Send transport connecting...");
+            // Signal local DTLS parameters to the server side transport
+            try {
+              await new Promise((resolve, reject) => {
+                socket.emit("transport-connect", { dtlsParameters }, (res) => {
+                  if (res?.error) {
+                    return reject(res.error); // stop here
+                  }
+                  resolve();
                 });
-                callback(); // only call if no error
-                console.log("Send transport connected successfully");
-              }
-                catch (err) {
-                console.error("Unexpected error in transport-connect callback:", err);
-                errback(err);
-              }
-
               });
+              callback(); // only call if no error
+              console.log("Send transport connected successfully");
+            } catch (err) {
+              console.error(
+                "Unexpected error in transport-connect callback:",
+                err
+              );
+              errback(err);
+            }
+          }
+        );
 
         // Add error handling for the transport
         sendTransportRef.current.on("connectionstatechange", (state) => {
@@ -435,14 +646,13 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
       }
     });
 
-    socketRef.current.on("newProducer", async ({ producerId }) => {
+    socket.on("newProducer", async ({ producerId, socketId,isPaused,appData }) => {
       console.log("New producer:", producerId);
-      await startConsume(producerId);
+      await startConsume(producerId, socketId,isPaused,appData);
     });
 
-    async function startConsume(producerId) {
-      // Ask server to create a consumer
-      socketRef.current.emit(
+    async function startConsume(producerId, socketId, isPaused) {
+      socket.emit(
         "consume",
         {
           rtpCapabilities: deviceRef.current.rtpCapabilities,
@@ -454,38 +664,57 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
             producerId: data.producerId,
             kind: data.kind,
             rtpParameters: data.rtpParameters,
+            appData:data.appData,
           });
-
+    
+          currentConsumers.set(producerId, consumer);
           consumersRef.current.push({
             producerId,
             consumer,
+            appData: data.appData
           });
-          console.log("cosumer created");
-
+    
           const { track } = consumer;
-
-          let stream = new MediaStream();
-
+          consumer.track.enabled = !isPaused;
+    
+          const isScreen = consumer.appData?.mediaTag === "screen";
+    
+          // Use separate maps
+          const mapToUse = isScreen ? screenSharesMap : currentStreams;
+          const streamKey = isScreen ? `${socketId}-screen` : socketId;
+    
+          let stream = mapToUse.get(streamKey);
+          if (!stream || isScreen) {
+            stream = new MediaStream();
+            mapToUse.set(streamKey, stream);
+    
+            // Add to remoteStreamsRef for UI
+            remoteStreamsRef.current.push({
+              socketId,
+              stream,
+              type: isScreen ? "screen" : "camera",
+            });
+          }
+          if(isScreen)
+          {
+            setFirstScreenShareStream(stream);
+            setScreenShareSocketId(socketId)
+          }
+    
           stream.addTrack(track);
-          remoteStreamsRef.current.push({
-            producerId,
-            stream,
-          });
-          // Required step
-          recvTransportRef.current.on("connectionstatechange", (state) => {
-            console.log("recv transport:", state);
-          
-            if (state === "connected") {
-              console.log("Transport ready → now attach consumer streams");
-          
-              // Now update UI
-                setRemoteStreams([...remoteStreamsRef.current]);
-                socketRef.current.emit("consumerResume", { consumerId: consumer.id });
-            }
-          });
+          stream.dispatchEvent(new MediaStreamTrackEvent("addtrack", { track }));
+    
+          if (recvTransportRef.current.connectionState === "connected") {
+            setRemoteStreams([...remoteStreamsRef.current]);
+            console.log(
+              `Resuming consumer for ${consumer.kind} (${isScreen ? "SCREEN" : "CAMERA"})`
+            );
+            socket.emit("consumerResume", { consumerId: consumer.id });
+          }
         }
       );
     }
+    
 
     async function sendWebcam() {
       try {
@@ -502,8 +731,9 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
             autoGainControl: true,
           },
         });
-        userVideoRef.current.srcObject = stream;
 
+        setLocalStream(stream);
+        localStreamRef.current=stream;
         console.log(
           "Got user media, tracks:",
           stream.getVideoTracks().length,
@@ -520,9 +750,10 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
             appData: { mediaType: "video" },
           });
           producersRef.current.push(videoProducer);
+          videoProducerRef.current = videoProducer;
           console.log("Video producer created:", videoProducer.id);
         }
-        /*
+
         // Produce audio track
         if (stream.getAudioTracks().length > 0) {
           const audioTrack = stream.getAudioTracks()[0];
@@ -531,8 +762,9 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
             appData: { mediaType: "audio" },
           });
           producersRef.current.push(audioProducer);
+          audioProducerRef.current = audioProducer;
           console.log("audio producer created:", audioProducer.id);
-        }*/
+        }
 
         console.log("Webcam and audio are being produced to SFU!");
       } catch (error) {
@@ -540,129 +772,227 @@ const checkSingleConsumer = async (consumer, producerId, index) => {
       }
     }
 
-    socketRef.current.on("producer-closed", ({ producerId }) => {
+    socket.on("producer-closed", ({ producerId }) => {
       console.log("Producer closed:", producerId);
-
-      // 1. Close the consumer
-      const entry = consumersRef.current.find(
-        (c) => c.producerId === producerId
-      );
-      if (entry) {
-        try {
-          entry.consumer.close();
-        } catch {}
+    
+      const entry = consumersRef.current.find(c => c.producerId === producerId);
+      if (!entry) return;
+    
+      if (entry.consumer.appData?.mediaTag === "screen") {
+        console.log("✅ this is the screen sharing producer");
+        setFirstScreenShareStream(null);
+    
+        // Also remove from screenSharesMap & remoteStreamsRef
+        const socketId = entry.consumer.appData.socketId;
+        screenSharesMap.delete(`${socketId}-screen`);
+        remoteStreamsRef.current = remoteStreamsRef.current.filter(
+          s => !(s.socketId === socketId && s.type === "screen")
+        );
+        setRemoteStreams([...remoteStreamsRef.current]);
       }
+    
+      entry.consumer.close();
+      consumersRef.current = consumersRef.current.filter(c => c.producerId !== producerId);
+    });
+    
+    
 
-      // 2. Remove it from array
-      consumersRef.current = consumersRef.current.filter(
-        (c) => c.producerId !== producerId
-      );
-
+    socket.on("userDisconnected", ({ socketId }) => {
       // 3. Remove the remote media stream
       remoteStreamsRef.current = remoteStreamsRef.current.filter(
-        (s) => s.producerId !== producerId
+        (s) => s.socketId !== socketId
       );
       console.log("length after filter", remoteStreamsRef.current.length);
-
+      currentStreams.delete(socketId);
       setRemoteStreams([...remoteStreamsRef.current]);
+      // 3. Remove from userDetails Map immutably
+      setUserDetails((prev) => {
+        const newMap = new Map(prev); // copy previous Map
+        newMap.delete(socketId); // remove the disconnected user
+        return newMap;
+      });
     });
 
+    socket.on("producerpaused", ({ producerId }) => {
+      const consumer = currentConsumers.get(producerId);
+      if (!consumer) return;
+      console.log("consumer is paused", consumer.kind);
+      consumer.pause();
+      consumer.track.enabled = false; // works for audio OR video
+    });
+
+    socket.on("producerresume", ({ producerId }) => {
+      const consumer = currentConsumers.get(producerId);
+      if (!consumer) return;
+      console.log("consumer is resumed", consumer.kind);
+      consumer.resume();
+      consumer.track.enabled = true; // works for audio OR video
+    });
+
+    socket.on("ActiveSpeaker", ({ socketId, producerId }) => {
+      setActiveSpeaker(socketId);
+    });
+    socket.on("silence", () => {
+      setActiveSpeaker(null);
+    });
+
+
+
+
+    socket.on("newUserJoined", ({ socketId, name, profilePic }) => {
+      console.log("the dtails of newly joined user is",socketId, name, profilePic)
+      setUserDetails(prev => {
+        const newMap = new Map(prev);
+        const existing = newMap.get(socketId) || {};
+        if (!existing.stream) {
+          let stream = currentStreams.get(socketId);
+        
+          if (!stream) {
+            stream = new MediaStream();
+            currentStreams.set(socketId, stream);
+          }
+        
+          existing.stream = stream; // <-- THIS is the correct assignment
+        }
+        
+        newMap.set(socketId, {
+          socketId,
+          name: name || existing.name || 'Unknown',
+          profilePic: profilePic || existing.profilePic || null,
+          stream: existing.stream
+        });
+        return newMap;
+      });
+    });
+    
+
+
+    // Cleanup function
     // Cleanup function
     return () => {
-      console.log("Cleaning up...");
+      console.log("Socket component unmounting - performing cleanup");
+      performCleanup();
 
-      // Close all producers
-      if (producersRef.current) {
-        producersRef.current.forEach((producer) => {
-          remoteStreamsRef.current = remoteStreamsRef.current.filter(
-            (s) => s.producerId !== producer.id
-          );
-          setRemoteStreams([...remoteStreamsRef.current]);
-          producer.close();
-        });
-        producersRef.current = [];
-      }
+      // Remove all socket listeners
+      const events = [
+        "disconnect", "error", "rtp-capabilities", "send-transport-created",
+        "existingProducers", "newProducer", "producer-closed", "producerpaused",
+        "producerresume", "userDisconnected", "ActiveSpeaker", "silence","newUserJoined","existingUsers"
+      ];
 
-      // Close transport
-      if (sendTransportRef.current) {
-        sendTransportRef.current.close();
-        sendTransportRef.current = null;
-      }
-
-      if (consumersRef.current && consumersRef.current.length > 0) {
-        consumersRef.current.forEach(({ consumer }) => {
-          try {
-            consumer.close();
-          } catch (err) {
-            console.warn("Error closing consumer:", err);
-          }
-        });
-
-        consumersRef.current = [];
-      }
-
-      // Disconnect socket
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-        socketRef.current = null;
-      }
+      events.forEach(event => {
+        socket.off(event);
+      });
     };
-  }, []);
+  }, [socket]);
 
+if (firstScreenShareStream)
+{
+  return <div className="relative w-full h-full bg-gray-900 p-4">
+    <ScreenShareLayout
+  remoteStreams={remoteStreams}
+  activeSpeaker={ActiveSpeaker}
+  currentUser={currentUser}
+  localStream={localStream}
+  socketId={socketId}
+  userDetails={userDetails}
+  isAudioEnabled={isAudioEnabled}
+  isVideoEnabled={isVideoEnabled}
+  screenSharerSocketId={screenSharerSocketId}
+  screenShareStream={firstScreenShareStream}
+  isLocalScreenSharing={isLocalScreenSharing}
+/>
+
+
+    <ControlBar
+      isAudioEnabled={isAudioEnabled}
+      isVideoEnabled={isVideoEnabled}
+      onToggleAudio={toggleAudio}
+      onToggleVideo={toggleVideo}
+      onLeaveCall={leaveCall}
+      onScreenShare={toggleScreenShare}
+      isScreenSharing={isScreenSharing}
+      participantsCount={participantsCount}
+      onToggleParticipants={toggleParticipants}
+      onToggleChat={toggleChat}
+    />
+    {isChatOpen && (
+      <div className="fixed inset-y-0 right-0 flex z-40">
+                        <ChatBar
+        isOpen={isChatOpen}
+        onClose={() => setChatOpen(false)}
+        messages={chat.messages}
+        typingUsers={chat.typingUsers}
+        sendMessage={chat.sendMessage}
+        startTyping={chat.startTyping}
+        stopTyping={chat.stopTyping}
+        currentUser={currentUser}
+        userDetails={userDetails}
+      />
+      </div>
+    )}
+    {isParticipantsBar && (
+      <div className="fixed inset-y-0 right-0 flex z-40">
+        <ParticipantsBar
+          currentUser={currentUser}
+          userDetails={userDetails}
+          isOpen={isParticipantsBar}
+        />
+      </div>
+    )}
+  </div>;
+}
   return (
-    <div
-      style={{
-        display: "flex",
-        gap: "20px",
-        padding: "20px",
-        background: "#111",
-        height: "100vh",
-        boxSizing: "border-box",
-      }}
-    >
-      {/* LOCAL VIDEO */}
-      <video
-        ref={userVideoRef}
-        autoPlay
-        muted
-        playsInline
-        style={{
-          width: "40%",
-          height: "auto",
-          borderRadius: "10px",
-          background: "#000",
-          border: "2px solid #444",
-        }}
+    <div className="relative w-full h-full bg-gray-900">
+      <VideoLayout
+        remoteStreams={remoteStreams}
+        socketId={socketId}
+        activeSpeaker={ActiveSpeaker}
+        currentUser={audioProducerRef.current}
+        localStream={localStream}
+        userDetails={userDetails}
+        isAudioEnabled={isAudioEnabled}
+        isVideoEnabled={isVideoEnabled}
+        isScreenSharing={isScreenSharing}
       />
 
-      {/* REMOTE VIDEOS */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
-          gap: "15px",
-          width: "60%",
-        }}
-      >
-        {remoteStreams.map(({ stream }, i) => (
-          <video
-            key={i}
-            autoPlay
-            playsInline
-            ref={(video) => {
-              if (video) video.srcObject = stream;
-            }}
-            style={{
-              width: "100%",
-              height: "200px",
-              objectFit: "cover",
-              borderRadius: "10px",
-              background: "#000",
-              border: "2px solid #444",
-            }}
-          />
-        ))}
-      </div>
+      <ControlBar
+        isAudioEnabled={isAudioEnabled}
+        isVideoEnabled={isVideoEnabled}
+        onToggleAudio={toggleAudio}
+        onToggleVideo={toggleVideo}
+        onLeaveCall={leaveCall}
+        onScreenShare={toggleScreenShare}
+        isScreenSharing={isScreenSharing}
+        participantsCount={participantsCount}
+        onToggleParticipants={toggleParticipants}
+        onToggleChat={toggleChat}
+      />
+      {isChatOpen && (
+        <div className="fixed inset-y-0 right-0 flex z-40">
+                <ChatBar
+        isOpen={isChatOpen}
+        onClose={() => setChatOpen(false)}
+        messages={chat.messages}
+        typingUsers={chat.typingUsers}
+        sendMessage={chat.sendMessage}
+        startTyping={chat.startTyping}
+        stopTyping={chat.stopTyping}
+        currentUser={currentUser}
+        userDetails={userDetails}
+      />
+
+        </div>
+      )}
+      {isParticipantsBar && (
+        <div className="fixed inset-y-0 right-0 flex z-40">
+        <ParticipantsBar
+          currentUser={currentUser}
+          userDetails={userDetails}
+          isOpen={isParticipantsBar}
+        />
+        </div>
+      )}
     </div>
   );
 }
