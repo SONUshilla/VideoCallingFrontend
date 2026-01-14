@@ -102,7 +102,7 @@ function VideoElement({
   const showFallbackImage = !isVideoEnabled && !isScreenShare;
 
   return (
-    <div className={`w-full relative rounded-md overflow-hidden bg-gray-900 aspect-video`}>
+    <div className={`w-full h-full relative rounded-md overflow-hidden bg-gray-900`}>
       {/* Name Tag */}
       <div className="z-10 absolute top-2 left-2 bg-black/50 backdrop-blur-sm text-white px-2 py-1 rounded-md text-sm font-medium">
         {name}
@@ -115,7 +115,7 @@ function VideoElement({
         autoPlay
         playsInline
         muted={!isAudioEnabled || isLocal} 
-        className={`w-full h-full object-contain ${!showVideo ? 'hidden' : ''}`}
+        className={`w-full h-full ${isScreenShare ? 'object-contain' : 'object-cover'} ${!showVideo ? 'hidden' : ''}`}
       />
 
       {/* Active Speaker Indicator */}

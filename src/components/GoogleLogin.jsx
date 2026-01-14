@@ -22,7 +22,7 @@ function GoogleAuth() {
               const token = credentialResponse.credential; // correct field
                 console.log("this is the token",token);
               const response = await axios.post(
-                "http://localhost:5000/auth/google",
+                "https://videocallbackend.dairykhatabook.online/auth/google",
                 {
                   token
                 }

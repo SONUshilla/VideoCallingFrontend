@@ -1,21 +1,17 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import VideoElement from "./VideoElement";
 import { useLoginContext } from "../context/LoginContext";
-import { motion } from "framer-motion";
-
+import { motion, AnimatePresence } from "framer-motion";
 import { 
-  FaUsers,
-  FaDesktop,
-  FaExpand,
-  FaCompress,
-  FaChevronLeft,
-  FaChevronRight
+  FaDesktop, 
+  FaCompress, 
+  FaExpand
 } from "react-icons/fa";
+import { BsGrid3X3GapFill } from "react-icons/bs";
 
 function ScreenShareLayout({ 
   remoteStreams, 
   activeSpeaker, 
-  currentUser, 
   localStream, 
   socketId, 
   userDetails,
@@ -26,367 +22,225 @@ function ScreenShareLayout({
   isLocalScreenSharing
 }) {
   const [users, setUsers] = useState([]);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const screenShareRef = useRef(null);
+  
+  // --- NEW: UI Visibility State ---
+  const [showControls, setShowControls] = useState(true);
+  const controlsTimeoutRef = useRef(null);
+  
+  const containerRef = useRef(null);
   const { username, profilePic } = useLoginContext();
 
-  // Build users array
-  useEffect(() => {
-    if (!userDetails && !localStream) return;
-
-    const buildUsersArray = () => {
-      const newUsers = new Map();
-
-      // Add remote users from userDetails
-      if (userDetails && userDetails.size > 0) {
-        for (const [id, value] of userDetails.entries()) {
-          if (id === screenSharerSocketId) {
-            const hasWebcamStream = value.stream || remoteStreams?.get(id);
-            if (hasWebcamStream) {
-              newUsers.set(id, {
-                ...value,
-                socketId: id,
-                isLocal: false,
-                isScreenSharing: true
-              });
-            }
-          } else {
-            newUsers.set(id, {
-              ...value,
-              socketId: id,
-              isLocal: false,
-              isScreenSharing: false
-            });
-          }
-        }
-      }
-
-      // Add local user
-      if (localStream && socketId) {
-        const shouldShowLocal = !isLocalScreenSharing || 
-                               (isLocalScreenSharing && (isVideoEnabled || localStream));
-        
-        if (shouldShowLocal) {
-          newUsers.set(socketId, {
-            socketId,
-            name: username || "Me",
-            profilePic: profilePic || "",
-            stream: localStream,
-            isLocal: true,
-            isScreenSharing: isLocalScreenSharing
-          });
-        }
-      }
-
-      return Array.from(newUsers.values());
-    };
-
-    setUsers(buildUsersArray());
-  }, [
-    userDetails, 
-    socketId, 
-    localStream, 
-    profilePic, 
-    username, 
-    screenSharerSocketId, 
-    isLocalScreenSharing, 
-    remoteStreams, 
-    isVideoEnabled
-  ]);
-
-  // Handle fullscreen toggle
-  const toggleFullscreen = () => {
-    if (!screenShareRef.current) return;
-
-    if (!isFullscreen) {
-      if (screenShareRef.current.requestFullscreen) {
-        screenShareRef.current.requestFullscreen();
-      } else if (screenShareRef.current.webkitRequestFullscreen) {
-        screenShareRef.current.webkitRequestFullscreen();
-      } else if (screenShareRef.current.msRequestFullscreen) {
-        screenShareRef.current.msRequestFullscreen();
-      }
-    } else {
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-      } else if (document.webkitExitFullscreen) {
-        document.webkitExitFullscreen();
-      } else if (document.msExitFullscreen) {
-        document.msExitFullscreen();
-      }
+  // --- 1. Auto-Hide Logic ---
+  const resetControlsTimeout = useCallback(() => {
+    setShowControls(true);
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
     }
-  };
-
-  // Listen for fullscreen changes
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-    document.addEventListener('msfullscreenchange', handleFullscreenChange);
-
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
-      document.removeEventListener('msfullscreenchange', handleFullscreenChange);
-    };
+    // Hide after 3 seconds of inactivity
+    controlsTimeoutRef.current = setTimeout(() => {
+      setShowControls(false);
+    }, 3000);
   }, []);
 
-  // Get screen sharer's name
-  const getScreenSharerName = () => {
-    if (isLocalScreenSharing) return "You";
-    
-    if (screenSharerSocketId) {
-      const sharer = users.find(u => u.socketId === screenSharerSocketId);
-      return sharer?.name || "Someone";
-    }
-    
-    return "Someone";
-  };
+  // Initial timer setup
+  useEffect(() => {
+    resetControlsTimeout();
+    return () => clearTimeout(controlsTimeoutRef.current);
+  }, [resetControlsTimeout]);
 
-  // Get active speaker name
-  const getActiveSpeakerName = () => {
-    if (!activeSpeaker) return null;
-    
-    if (activeSpeaker === screenSharerSocketId) {
-      return isLocalScreenSharing ? "You are speaking" : `${getScreenSharerName()} is speaking`;
+  // --- 2. Get Presenter Name ---
+  const presenterName = useMemo(() => {
+    if (isLocalScreenSharing) return "You";
+    if (userDetails && screenSharerSocketId) {
+       const sharer = userDetails.get(screenSharerSocketId);
+       if (sharer) return sharer.name;
     }
-    
-    const speaker = users.find(u => u.socketId === activeSpeaker);
-    return speaker ? `${speaker.name} is speaking` : "Someone is speaking";
+    return "Unknown User";
+  }, [isLocalScreenSharing, screenSharerSocketId, userDetails]);
+
+  // --- 3. Build Users List ---
+  useEffect(() => {
+    const buildUsersArray = () => {
+      const allUsers = [];
+      if (userDetails) {
+        userDetails.forEach((value, id) => {
+           allUsers.push({ ...value, socketId: id, isLocal: false });
+        });
+      }
+      if (localStream && socketId) {
+        allUsers.push({
+          socketId,
+          name: username || "Me",
+          profilePic,
+          stream: localStream,
+          isLocal: true,
+        });
+      }
+      return allUsers;
+    };
+    setUsers(buildUsersArray());
+  }, [userDetails, socketId, localStream, profilePic, username]);
+
+  // --- 4. Fullscreen Toggle ---
+  const toggleFullscreen = (e) => {
+    e.stopPropagation(); // Prevent triggering the hide logic immediately
+    resetControlsTimeout(); // Keep controls visible when clicking
+    if (!document.fullscreenElement) {
+      containerRef.current?.requestFullscreen();
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen?.();
+      setIsFullscreen(false);
+    }
   };
 
   return (
-    <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
-      {/* Main Screen Share Area */}
-      <div 
-        ref={screenShareRef}
-        className={`relative ${sidebarCollapsed ? 'w-full' : 'w-3/4'} transition-all duration-300 bg-black`}
-      >
-        {/* Screen Share Header */}
-        <div className="absolute top-0 left-0 right-0 z-50 bg-gradient-to-b from-black/90 via-black/70 to-transparent p-4 flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <div className="bg-red-600 p-2 rounded-lg">
-              <FaDesktop size={20} />
-            </div>
-            <div>
-              <h2 className="font-bold text-lg">Screen Sharing</h2>
-              <p className="text-gray-300 text-sm">
-                {getScreenSharerName()} is presenting
-              </p>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-3">
-            {/* Participants Count */}
-            <div className="flex items-center gap-2 bg-gray-800/90 px-4 py-2 rounded-lg">
-              <FaUsers size={18} />
-              <span className="font-semibold">{users.length}</span>
-              <span className="text-gray-400 text-sm">participants</span>
-            </div>
+    <div 
+      ref={containerRef} 
+      // Add listeners to the main container to detect activity
+      onMouseMove={resetControlsTimeout}
+      onTouchStart={resetControlsTimeout}
+      onClick={resetControlsTimeout}
+      className="h-[100dvh] w-full bg-[#121212] flex flex-col text-white overflow-hidden font-sans relative"
+    >
+      
+
+
+
+      {/* =========================================
+          MAIN CONTENT AREA
+      ========================================= */}
+      <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden relative">
+        
+        {/* --- STAGE (Screen Share) --- */}
+        <div className="flex-1 bg-black relative flex items-center justify-center p-0 lg:p-4 min-w-0 min-h-0">
+                {/* =========================================
+          TOP CONTROL BAR (Auto-Hiding)
+      ========================================= */}
+      <AnimatePresence>
+        {showControls && (
+          <motion.div 
+            initial={{ y: -100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -100, opacity: 0 }}
+            transition={{ duration: 0.3, ease: "easeInOut" }}
+            className="absolute top-0 left-0 right-0 h-16 bg-gradient-to-b from-black/90 to-transparent flex items-center justify-between px-4 z-50 pointer-events-none"
+          >
+            {/* pointer-events-none on parent allows clicking through to video
+               pointer-events-auto on children re-enables clicking buttons 
+            */}
             
-            {/* Fullscreen Toggle */}
-            <button
-              onClick={toggleFullscreen}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-800/90 hover:bg-gray-700/90 rounded-lg transition-colors"
-            >
-              {isFullscreen ? (
-                <>
-                  <FaCompress size={16} />
-                  <span>Exit Fullscreen</span>
-                </>
-              ) : (
-                <>
-                  <FaExpand size={16} />
-                  <span>Fullscreen</span>
-                </>
-              )}
-            </button>
-            
-            {/* Toggle Sidebar */}
-            <button
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className="p-3 bg-gray-800/90 hover:bg-gray-700/90 rounded-lg transition-colors"
-              title={sidebarCollapsed ? "Show participants" : "Hide participants"}
-            >
-              {sidebarCollapsed ? <FaChevronLeft size={18} /> : <FaChevronRight size={18} />}
-            </button>
-          </div>
-        </div>
-
-        {/* Screen Share Video Area */}
-        <div className="h-full flex items-center justify-center p-4 pt-20">
-          {screenShareStream ? (
-            <div className="relative w-full h-full max-w-7xl">
-              <VideoElement
-                stream={screenShareStream}
-                isActiveSpeaker={screenSharerSocketId === activeSpeaker}
-                socketId={screenSharerSocketId}
-                name={`${getScreenSharerName()}'s Screen`}
-                Audio={false}
-                Video={true}
-                isLocal={isLocalScreenSharing}
-                isScreenShare={true}
-                className="rounded-xl shadow-2xl"
-              />
-              
-
-            </div>
-          ) : (
-            <div className="text-center p-8">
-              <div className="bg-gray-800/50 p-8 rounded-2xl inline-block">
-                <FaDesktop size={80} className="mx-auto mb-6 text-gray-600" />
-                <h3 className="text-2xl font-bold mb-3">No Screen Sharing</h3>
-                <p className="text-gray-400 max-w-md">
-                  Waiting for someone to share their screen. <br />
-                  The screen share will appear here automatically.
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Bottom Controls */}
-        <div className="absolute bottom-0 left-0 right-0  bg-gradient-to-t from-black/90 via-black/70 to-transparent p-4">
-          <div className="flex justify-between items-center">
-            {/* Active Speaker Indicator */}
-            {activeSpeaker && (
-              <div className="flex items-center gap-3 bg-gray-800/90 px-4 py-3 rounded-lg">
-                <div className="relative">
-                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                  <div className="absolute inset-0 bg-green-500 rounded-full animate-ping opacity-75"></div>
+            {/* Left: Info Badge */}
+            <div className="flex items-center gap-3 pointer-events-auto bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10">
+                <div className="text-red-500 animate-pulse">
+                    <FaDesktop size={14} />
                 </div>
-                <span className="font-medium">{getActiveSpeakerName()}</span>
-              </div>
-            )}
-            
-            {/* Connection Status */}
-            <div className="flex items-center gap-2 text-sm text-gray-400">
-              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-              <span>Screen sharing connection active</span>
+                <div className="flex flex-col justify-center">
+                    <span className="text-xs font-bold text-gray-100 leading-tight">
+                      {isLocalScreenSharing ? "You are presenting" : `${presenterName} is presenting`}
+                    </span>
+                </div>
             </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Participants Sidebar */}
-      {!sidebarCollapsed && (
-        <motion.div 
-          initial={{ x: 20, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: 20, opacity: 0 }}
-          className="w-1/4 border-l border-gray-800 bg-gray-900/95 backdrop-blur-sm flex flex-col"
-        >
-          {/* Sidebar Header */}
-          <div className="p-6 border-b border-gray-800">
-            <div className="flex items-center justify-between">
-              <h3 className="font-bold text-xl flex items-center gap-3">
-                <FaUsers size={20} />
-                Participants
-              </h3>
-              <div className="bg-blue-600 text-white text-sm font-bold px-3 py-1 rounded-full">
-                {users.length}
-              </div>
+            {/* Right: Controls */}
+            <div className="flex gap-2 pointer-events-auto">
+                <button 
+                    onClick={(e) => { e.stopPropagation(); setIsSidebarOpen(!isSidebarOpen); }}
+                    className={`p-2 rounded-lg transition-all active:scale-95 ${isSidebarOpen ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'bg-black/50 text-gray-300 border border-white/10 hover:bg-white/10'}`}
+                    title="Toggle Participants"
+                >
+                    <BsGrid3X3GapFill size={16} />
+                </button>
+                <button 
+                    onClick={toggleFullscreen}
+                    className="p-2 bg-black/50 border border-white/10 text-gray-300 hover:bg-white/10 rounded-lg transition-all active:scale-95"
+                    title="Toggle Fullscreen"
+                >
+                    {isFullscreen ? <FaCompress size={16} /> : <FaExpand size={16} />}
+                </button>
             </div>
-            <p className="text-gray-400 text-sm mt-2">
-              People in this meeting
-            </p>
-          </div>
-
-          {/* Participants List */}
-          <div className="flex-1 overflow-y-auto">
-            <div className="p-4 space-y-4">
-              {/* Screen Sharer Section (if in sidebar) */}
-              {screenSharerSocketId && users.some(u => u.socketId === screenSharerSocketId) && (
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
-                    Presenter
-                  </h4>
-                  <div className="relative group">
-                    <div className="absolute -top-2 left-2 z-20 bg-red-600 text-xs px-3 py-1.5 rounded-lg flex items-center gap-2 font-bold shadow-lg">
-                      <FaDesktop size={12} />
-                      <span>PRESENTING</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+            {screenShareStream ? (
+                <div className="w-full h-full flex items-center justify-center">
+                    <div className="w-full h-full max-w-full max-h-full aspect-video relative rounded-lg overflow-hidden">
+                        <VideoElement 
+                            stream={screenShareStream}
+                            // Name only shows on hover of video element now (handled by VideoElement internal hover logic usually)
+                            // or we rely on the top bar for the main info.
+                            name={isLocalScreenSharing ? "Your Screen" : `${presenterName}'s Screen`}
+                            isLocal={false}
+                            isScreenShare={true} 
+                            Audio={false}
+                            Video={true}
+                        />
                     </div>
-                    {users
-                      .filter(u => u.socketId === screenSharerSocketId)
-                      .map(user => (
-                        <VideoElement
-                          key={user.socketId}
-                          stream={user.stream}
-                          profileUrl={user.profilePic}
-                          isActiveSpeaker={user.socketId === activeSpeaker}
-                          socketId={user.socketId}
-                          name={user.name}
-                          Audio={isAudioEnabled}
-                          Video={isVideoEnabled}
-                          isLocal={user.isLocal}
-                          isScreenSharing={user.isScreenSharing}
-                          className="border-2 border-red-500 shadow-lg"
-                          compact={true}
-                        />
-                      ))}
-                  </div>
                 </div>
-              )}
-
-              {/* Other Participants */}
-              {users.filter(u => u.socketId !== screenSharerSocketId).length > 0 && (
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
-                    Participants
-                  </h4>
-                  <div className="space-y-3">
-                    {users
-                      .filter(u => u.socketId !== screenSharerSocketId)
-                      .map(user => (
-                        <VideoElement
-                          key={user.socketId}
-                          stream={user.stream}
-                          profileUrl={user.profilePic}
-                          isActiveSpeaker={user.socketId === activeSpeaker}
-                          socketId={user.socketId}
-                          name={user.name}
-                          Audio={isAudioEnabled}
-                          Video={isVideoEnabled}
-                          isLocal={user.isLocal}
-                          compact={true}
-                          className="hover:border-gray-600 transition-colors"
-                        />
-                      ))}
-                  </div>
+            ) : (
+                <div className="flex flex-col items-center justify-center text-gray-500 opacity-60">
+                    <div className="w-16 h-16 bg-gray-800 rounded-full flex items-center justify-center mb-4 animate-pulse">
+                        <FaDesktop size={24} />
+                    </div>
+                    <p className="text-sm font-medium">Waiting for share...</p>
                 </div>
-              )}
+            )}
+        </div>
 
-              {/* Empty State */}
-              {users.length === 0 && (
-                <div className="text-center py-12">
-                  <FaUsers size={64} className="mx-auto mb-6 text-gray-700" />
-                  <h4 className="text-lg font-semibold mb-2">No other participants</h4>
-                  <p className="text-gray-500 text-sm">
-                    You're the only one here. <br />
-                    Invite others to join the meeting.
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
+        {/* --- SIDEBAR / FILMSTRIP --- */}
+        <AnimatePresence>
+            {isSidebarOpen && (
+                <motion.div
+                    initial={window.innerWidth >= 1024 ? { width: 0, opacity: 0 } : { height: 0, opacity: 0 }}
+                    animate={window.innerWidth >= 1024 ? { width: "280px", opacity: 1 } : { height: "140px", opacity: 1 }}
+                    exit={window.innerWidth >= 1024 ? { width: 0, opacity: 0 } : { height: 0, opacity: 0 }}
+                    transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                    className="
+                        bg-[#1e1e1e]
+                        flex-none
+                        border-t lg:border-t-0 lg:border-l border-white/10
+                        flex lg:flex-col flex-row
+                        overflow-x-auto lg:overflow-y-auto
+                        p-3 gap-3
+                        z-40
+                        scrollbar-thin scrollbar-thumb-gray-700
+                    "
+                    // Stop propagation so clicking the sidebar doesn't trigger the "Show Controls" 
+                    // if you prefer, OR remove this to let sidebar clicks also wake up the UI.
+                    // keeping it interactive usually feels better:
+                    onClick={(e) => { e.stopPropagation(); resetControlsTimeout(); }}
+                >
+                    {users.map((user) => (
+                        <div 
+                            key={user.socketId}
+                            className={`
+                                relative flex-none
+                                lg:w-full lg:h-[160px] 
+                                w-[160px] h-full       
+                                rounded-xl overflow-hidden bg-[#2c2c2c]
+                                transition-all duration-300
+                                ${activeSpeaker === user.socketId ? "ring-2 ring-blue-500" : "border border-white/5"}
+                            `}
+                        >
+                            <VideoElement
+                                stream={user.stream}
+                                profileUrl={user.profilePic}
+                                isActiveSpeaker={activeSpeaker === user.socketId}
+                                socketId={user.socketId}
+                                name={user.name}
+                                Audio={isAudioEnabled}
+                                Video={isVideoEnabled}
+                                isLocal={user.isLocal}
+                            />
+                        </div>
+                    ))}
+                </motion.div>
+            )}
+        </AnimatePresence>
 
-
-        </motion.div>
-      )}
-
-      {/* Collapsed Sidebar Button */}
-      {sidebarCollapsed && (
-        <button
-          onClick={() => setSidebarCollapsed(false)}
-          className="absolute right-0 top-1/2 transform -translate-y-1/2 bg-gray-900/80 hover:bg-gray-800 p-3 rounded-l-lg transition-colors z-40"
-        >
-          <FaChevronLeft size={20} />
-        </button>
-      )}
+      </div>
     </div>
   );
 }

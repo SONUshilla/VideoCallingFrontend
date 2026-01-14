@@ -15,19 +15,16 @@ function VideoLayout({
   const [users, setUsers] = useState([]);
   const { username, profilePic } = useLoginContext();
   
-  // Layout state to control sizing
+  // Layout state 
   const [layout, setLayout] = useState({ 
-    basis: "100%", // Width of each tile
-    maxWidth: "100%", 
-    maxHeight: "100%" 
+    basis: "100%", 
+    height: "100%" // Changed from maxHeight to strict height
   });
 
   // --- 1. User List Management ---
   useEffect(() => {
     setUsers(() => {
       const newUsers = [];
-      
-      // Add Local User
       if (localStream && socketId) {
         newUsers.push({
           socketId,
@@ -37,8 +34,6 @@ function VideoLayout({
           isLocal: true
         });
       }
-
-      // Add Remote Users
       if (userDetails) {
         userDetails.forEach((value, id) => {
           if (id !== socketId) {
@@ -50,49 +45,74 @@ function VideoLayout({
     });
   }, [userDetails, socketId, localStream, profilePic, username]);
 
-  // --- 2. Smart Layout Calculator (Google Meet Style) ---
+  // --- 2. Precise Layout Calculator ---
   useEffect(() => {
     const count = users.length;
     const isMobile = window.innerWidth < 640;
-    
-    // Default: Full screen spotlight
-    let newLayout = { basis: "100%", maxWidth: "900px", maxHeight: "100%" };
+    const gap = "1rem"; // gap-4 is 1rem (16px)
+
+    let newLayout = { basis: "100%", height: "100%" };
 
     if (isMobile) {
-      if (count > 2) newLayout = { basis: "46%", maxWidth: "50%", maxHeight: "25%" }; // 2 cols on mobile
-      else if (count === 2) newLayout = { basis: "100%", maxWidth: "100%", maxHeight: "48%" }; // Stacked
-    } else {
-      // Desktop Logic
       if (count === 1) {
-        newLayout = { basis: "100%", maxWidth: "1000px", maxHeight: "100%" };
-      } else if (count === 2) {
-        newLayout = { basis: "48%", maxWidth: "48%", maxHeight: "100%" }; // Side-by-side
-      } else if (count <= 4) {
-        newLayout = { basis: "48%", maxWidth: "48%", maxHeight: "48%" }; // 2x2
-      } else if (count <= 6) {
-        newLayout = { basis: "32%", maxWidth: "32%", maxHeight: "48%" }; // 3x2 (Google Meet style)
-      } else if (count <= 9) {
-        newLayout = { basis: "32%", maxWidth: "32%", maxHeight: "32%" }; // 3x3
-      } else {
-        newLayout = { basis: "24%", maxWidth: "24%", maxHeight: "24%" }; // 4x4
+        // 1 User: Full
+        newLayout = { basis: "100%", height: "100%" };
+      } 
+      else if (count === 2) {
+        // 2 Users: 1x2 (Stacked vertically)
+        // Height: (100% space - 1 gap) / 2
+        newLayout = { basis: "100%", height: `calc((100% - ${gap}) / 2)` };
+      } 
+      else if (count === 3) {
+        // 3 Users: 1x3 (Stacked vertically)
+        // Height: (100% space - 2 gaps) / 3
+        newLayout = { basis: "100%", height: `calc((100% - 2 * ${gap}) / 3)` };
+      } 
+      else if (count === 4) {
+        // 4 Users: 2x2 (Grid)
+        // Width: (100% - 1 gap) / 2
+        // Height: (100% - 1 gap) / 2
+        newLayout = { 
+          basis: `calc((100% - ${gap}) / 2)`, 
+          height: `calc((100% - ${gap}) / 2)` 
+        };
+      } 
+      else if (count >= 5) {
+        // 5 Users: 2x2 + 1 (Grid, 3 rows total)
+        // Width: Same as 2x2
+        // Height: (100% - 2 gaps) / 3 (because it takes 3 rows to show 5 items)
+        newLayout = { 
+          basis: `calc((100% - ${gap}) / 2)`, 
+          height: `calc((100% - 2 * ${gap}) / 3)` 
+        };
       }
+    } else {
+      // Desktop Logic (Standard Grid)
+      if (count === 1) newLayout = { basis: "100%", height: "100%" };
+      else if (count === 2) newLayout = { basis: `calc((100% - ${gap}) / 2)`, height: "100%" };
+      else if (count <= 4) newLayout = { basis: `calc((100% - ${gap}) / 2)`, height: `calc((100% - ${gap}) / 2)` };
+      else if (count <= 6) newLayout = { basis: `calc((100% - 2 * ${gap}) / 3)`, height: `calc((100% - ${gap}) / 2)` };
+      else newLayout = { basis: `calc((100% - 2 * ${gap}) / 3)`, height: `calc((100% - 2 * ${gap}) / 3)` };
     }
 
     setLayout(newLayout);
   }, [users.length]);
 
   return (
-    <div className="h-[100dvh] w-full bg-[#202124] flex items-center justify-center p-4 overflow-hidden relative">
+    // P-4 adds padding around the edges.
+    // Flex-wrap handles the grid.
+    // Content-center ensures if there is slight space left, it centers vertically.
+    <div className="h-[100dvh] w-full bg-[#202124] p-4 box-border overflow-hidden">
       <motion.div
         layout
         className="
           flex flex-wrap 
-          justify-center items-center content-center
+          justify-center content-center 
           gap-4
           w-full h-full
         "
       >
-        <AnimatePresence>
+        <AnimatePresence mode="popLayout">
           {users.map((user) => (
             <motion.div
               key={user.socketId}
@@ -103,19 +123,15 @@ function VideoLayout({
               transition={{ duration: 0.3 }}
               style={{
                 flexBasis: layout.basis,
-                maxWidth: layout.maxWidth,
-                maxHeight: layout.maxHeight // Helps keeping aspect ratio on specific screens
+                height: layout.height, // Strict height to force the calc() logic
+                width: layout.basis
               }}
-              className={`
-                relative
-                aspect-video
-                flex-grow-0 flex-shrink-0
-                min-w-[200px]
-              `}
+              className="relative flex-grow-0 flex-shrink-0"
             >
-              <div className={`w-full h-full rounded-xl overflow-hidden shadow-lg transition-all duration-300
-                 ${user.socketId === activeSpeaker ? "ring-2 ring-blue-500" : "border border-white/10"}`
-              }>
+              <div className={`
+                w-full h-full rounded-xl overflow-hidden shadow-lg 
+                ${user.socketId === activeSpeaker ? "ring-2 ring-blue-500" : "border border-white/10"}
+              `}>
                 <VideoElement
                   stream={user.stream}
                   profileUrl={user.profilePic}

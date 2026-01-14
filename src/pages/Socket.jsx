@@ -381,32 +381,36 @@ function Socket() {
 
     setSocketId(socket.id);
 
-    socket.on("existingUsers", ({ existingUsers }) => {
+    socket.on("existingUsers", ({ existingUsers, hostId }) => {
+      console.log("the host id is",hostId)
       setUserDetails(prev => {
         const newMap = new Map(prev);
     
         existingUsers.forEach(user => {
           const existing = newMap.get(user.socketId) || {};
+    
           if (!existing.stream) {
             let stream = currentStreams.get(user.socketId);
             if (!stream) {
               stream = new MediaStream();
               currentStreams.set(user.socketId, stream);
             }
-            existing.stream = stream; // <-- THIS is the correct assignment
+            existing.stream = stream;
           }
-          
+    
           newMap.set(user.socketId, {
             socketId: user.socketId,
-            name: user.name || existing.name || 'Unknown',
+            name: user.name || existing.name || "Unknown",
             profilePic: user.profilePic || existing.profilePic || null,
-            stream: existing.stream ,
+            stream: existing.stream,
+            isHost: user.socketId === hostId // ✅ CORRECT
           });
         });
     
         return newMap;
       });
     });
+    
 
 
 
@@ -988,6 +992,7 @@ if (firstScreenShareStream)
         <div className="fixed inset-y-0 right-0 flex z-40">
         <ParticipantsBar
           currentUser={currentUser}
+          onClose={() => setIsParicipantsBar(false)}
           userDetails={userDetails}
           isOpen={isParticipantsBar}
         />
