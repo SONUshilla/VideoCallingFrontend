@@ -425,6 +425,10 @@ function Socket() {
 
         // Step 4: Request recv transport params
         socket.emit("create-recv-transport", async (params) => {
+          if (params.error) {
+            console.error("Server failed to create transport:", params.error);
+            return; // Stop execution so Mediasoup doesn't crash
+          }
           if (!params) console.log("no params");
           console.log("Recv params:", params);
           setCreatingRecvTransport(true);

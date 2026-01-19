@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion'; 
 import { useSocket } from '../context/SocketContext';
+import { useSearchParams } from 'react-router-dom';
 
 // --- Icons (Inline for consistency) ---
 const CloseIcon = () => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>;
@@ -20,7 +21,11 @@ const ParticipantsBar = ({
   const [filteredUsers, setFilteredUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [isCopied, setIsCopied] = useState(false);
-  
+  const [searchParams] = useSearchParams();
+  const meetingId = searchParams.get("meetingId");
+
+// Construct the link pointing to /dashboard instead of /socket
+  const dashboardLink = `${window.location.origin}/dashboard?meetingId=${meetingId}`;
   // --- 1. Merge & Manage Users ---
   useEffect(() => {
     let allUsers = [];
@@ -42,6 +47,7 @@ const ParticipantsBar = ({
     setOnlineUsers(allUsers);
   }, [userDetails, currentUser]);
 
+
   // --- 2. Handle Search ---
   useEffect(() => {
     if (!searchTerm.trim()) {
@@ -56,11 +62,10 @@ const ParticipantsBar = ({
 
   // --- 3. Copy Link Logic ---
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(window.location.href);
+    navigator.clipboard.writeText(dashboardLink); // <--- Use dashboardLink here
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 2000);
   };
-
   const getInitials = (name) => (name ? name.charAt(0).toUpperCase() : "?");
 
   // --- Animation Variants ---
@@ -212,7 +217,7 @@ const ParticipantsBar = ({
              <p className="text-xs text-[#e8eaed] font-medium px-1">Meeting Link</p>
              <div className="flex items-center gap-2 bg-[#202124] rounded border border-[#3c4043] p-1 pr-1">
                  <p className="text-xs text-[#9aa0a6] truncate flex-1 font-mono pl-2 select-all">
-                    {window.location.href}
+                  {dashboardLink}
                  </p>
                  <button 
                    onClick={handleCopyLink}

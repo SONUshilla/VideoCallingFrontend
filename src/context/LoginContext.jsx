@@ -20,7 +20,7 @@ export const LoginProvider = ({ children }) => {
           return;
         }
 
-        const response = await axios.get("https://videocallbackend.dairykhatabook.online/auth/verifyToken", {
+        const response = await axios.get(`${process.env.REACT_APP_BACKEND_URL}/auth/verifyToken`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },

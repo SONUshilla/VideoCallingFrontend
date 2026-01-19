@@ -1,29 +1,20 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react'; // Added useRef
 import { useSocket } from '../context/SocketContext';
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useLoginContext } from '../context/LoginContext';
 
-// --- Icons ---
-const VideoIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
-);
-const KeyboardIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="16" x="2" y="4" rx="2" ry="2"/><path d="M6 8h.001"/><path d="M10 8h.001"/><path d="M14 8h.001"/><path d="M18 8h.001"/><path d="M6 12h.001"/><path d="M10 12h.001"/><path d="M14 12h.001"/><path d="M18 12h.001"/><path d="M7 16h10"/></svg>
-);
-const CopyIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-);
-const CheckIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-);
-const PlusIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-);
+// --- Icons (Keep your existing icons here) ---
+const VideoIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>);
+const KeyboardIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="16" x="2" y="4" rx="2" ry="2"/><path d="M6 8h.001"/><path d="M10 8h.001"/><path d="M14 8h.001"/><path d="M18 8h.001"/><path d="M6 12h.001"/><path d="M10 12h.001"/><path d="M14 12h.001"/><path d="M18 12h.001"/><path d="M7 16h10"/></svg>);
+const CopyIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>);
+const CheckIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>);
+const PlusIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>);
 
 const Dashboard = () => {
   const [meetingLink, setMeetingLink] = useState('');
   const [meetingId, setMeetingId] = useState('');
   const [showMeetingCreated, setShowMeetingCreated] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(''); // New state for errors
   
   // Join Input State
   const [joinMeetingId, setJoinMeetingId] = useState('');
@@ -34,35 +25,69 @@ const Dashboard = () => {
   const [isLoading, setIsLoading] = useState(false);
   
   const navigate = useNavigate();
-  let socketRef = useSocket();
-  let { isLoggedIn, username, profilePic } = useLoginContext();
-  const [socket, setSocket] = useState();
+  const [searchParams] = useSearchParams();
+  
+  // Use a Ref to prevent double-firing in React StrictMode
+  const hasJoinedRef = useRef(false);
 
+  // Get socket directly (assuming useSocket returns the socket instance)
+  const socket = useSocket(); 
+  const { isLoggedIn, username, profilePic } = useLoginContext();
+
+  // 1. Auth Check
   useEffect(() => {
     if (!isLoggedIn) navigate("/login");
   }, [isLoggedIn, navigate]);
 
+  // 2. AUTO-JOIN LOGIC (Refined)
   useEffect(() => {
-    if (socketRef) setSocket(socketRef);
-  }, [socketRef]);
+    const urlMeetingId = searchParams.get("meetingId");
+
+    // Safety checks: Must be logged in, have socket, have ID, and NOT have joined yet
+    if (!socket || !isLoggedIn || !urlMeetingId || hasJoinedRef.current) return;
+
+    console.log("Auto-joining meeting from URL:", urlMeetingId);
+    
+    // Lock the ref immediately to prevent double-joins
+    hasJoinedRef.current = true;
+    setIsLoading(true);
+
+    socket.emit("joinRoom", { roomId: urlMeetingId, name: username, profilePic }, (response) => {
+      setIsLoading(false);
+      if (response?.error) {
+         console.error("Auto-join failed:", response.error);
+         setErrorMsg(response.error);
+         // Reset ref so they can try manually if they want
+         hasJoinedRef.current = false; 
+      } else {
+         // Success - Navigate
+         navigate(`/socket?meetingId=${urlMeetingId}`);
+      }
+    });
+  }, [socket, isLoggedIn, username, searchParams, navigate, profilePic]);
+
 
   // --- Create Meeting ---
   const createMeeting = () => {
     if (!socket) return;
+    
     setIsLoading(true);
+    setErrorMsg('');
+    
     socket.emit("createMeeting", (response) => {
       setIsLoading(false);
-      if (response.error) return console.error(response.error);
+      if (response.error) {
+        return console.error(response.error);
+      }
       
       const mId = response.meetingId;
       setMeetingId(mId);
-      // Dynamically uses current origin (localhost or production domain)
-      setMeetingLink(`${window.location.origin}/meeting?meetingId=${mId}`);
+      setMeetingLink(`${window.location.origin}/dashboard?meetingId=${mId}`);
       setShowMeetingCreated(true);
     });
   };
 
-  // --- Copy Logic (Separated) ---
+  // --- Copy Logic ---
   const copyToClipboard = async (text, type) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -79,11 +104,9 @@ const Dashboard = () => {
   };
 
   // --- Smart Input Handler ---
-  // If user pastes a full URL, we extract just the ID
   const handleJoinInputChange = (e) => {
     const value = e.target.value;
     try {
-      // Attempt to check if it's a URL
       const url = new URL(value);
       const idParam = url.searchParams.get("meetingId");
       if (idParam) {
@@ -92,25 +115,36 @@ const Dashboard = () => {
         setJoinMeetingId(value);
       }
     } catch (err) {
-      // Not a URL, just set the text
       setJoinMeetingId(value);
     }
   };
 
-  const joinMeeting = async () => {
-    if (!socket) return;
-    await socket.emit("joinRoom", { roomId: meetingId }, () => navigate("/socket"));
-  };
-
+  // --- Manual Join Actions ---
   const joinMeetingWithId = async () => {
     if (!joinMeetingId || (!socket && username)) return;
-    await socket.emit("joinRoom", { roomId: joinMeetingId, name: username, profilePic }, () => navigate("/socket"));
+    setIsLoading(true);
+    
+    await socket.emit("joinRoom", { roomId: joinMeetingId, name: username, profilePic }, (response) => {
+        setIsLoading(false);
+        if(response?.error) {
+            setErrorMsg(response.error);
+        } else {
+            navigate(`/socket?meetingId=${joinMeetingId}`);
+        }
+    });
   };
+  
+  const joinCreatedMeeting = async () => {
+     if (!socket) return;
+     await socket.emit("joinRoom", { roomId: meetingId, name: username, profilePic }, () => 
+       navigate(`/socket?meetingId=${meetingId}`)
+     );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
       
-      {/* --- Navbar --- */}
+      {/* Navbar (Kept same) */}
       <nav className="sticky top-0 z-50 bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center">
@@ -118,29 +152,32 @@ const Dashboard = () => {
               <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">Z</div>
               <span className="font-semibold text-lg tracking-tight">ZoomClone</span>
             </div>
-            
             <div className="flex items-center gap-3 pl-4 border-l border-gray-200 ml-4">
               <div className="text-right hidden sm:block">
                 <p className="text-sm font-medium text-gray-900">{username}</p>
                 <p className="text-xs text-gray-500">Free Account</p>
               </div>
-              <img 
-                src={profilePic || "https://via.placeholder.com/40"} 
-                alt="Profile" 
-                className="h-9 w-9 rounded-full bg-gray-200 border border-gray-200 object-cover"
-              />
+              <img src={profilePic || "https://via.placeholder.com/40"} alt="Profile" className="h-9 w-9 rounded-full bg-gray-200 border border-gray-200 object-cover" />
             </div>
           </div>
         </div>
       </nav>
 
-      {/* --- Main Content --- */}
+      {/* Main Content */}
       <main className="max-w-5xl mx-auto px-4 py-12 sm:px-6 lg:px-8">
         
         <div className="mb-10 text-center md:text-left">
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Dashboard</h1>
           <p className="text-gray-500 mt-1">Manage your meetings and connections.</p>
         </div>
+
+        {/* --- ERROR MESSAGE DISPLAY --- */}
+        {errorMsg && (
+            <div className="mb-6 bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-lg text-sm flex items-center gap-2">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                {errorMsg}
+            </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           
@@ -167,51 +204,37 @@ const Dashboard = () => {
                     {isLoading ? (
                       <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                     ) : (
-                      <>
-                        <PlusIcon /> Start Meeting
-                      </>
+                      <> <PlusIcon /> Start Meeting </>
                     )}
                   </button>
                 </div>
               ) : (
-                /* Success State - Split View */
+                /* Success State */
                 <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
                   <div className="p-4 bg-green-50 border border-green-100 rounded-lg space-y-3">
                     <div className="flex items-center gap-2 text-green-700 font-medium text-sm">
                       <CheckIcon /> Meeting Ready
                     </div>
                     
-                    {/* Row 1: Meeting Code (Primary for joining manually) */}
+                    {/* Meeting Code */}
                     <div>
                       <p className="text-xs text-green-700 font-semibold mb-1 uppercase tracking-wider">Meeting Code</p>
                       <div className="flex gap-2">
                         <code className="flex-1 bg-white border border-green-200 text-gray-900 font-bold text-lg p-2 rounded text-center tracking-widest">
                           {meetingId}
                         </code>
-                        <button
-                          onClick={() => copyToClipboard(meetingId, 'id')}
-                          className="flex-shrink-0 px-3 flex items-center justify-center bg-white border border-green-200 text-green-700 hover:bg-green-100 rounded transition-colors"
-                          title="Copy ID"
-                        >
+                        <button onClick={() => copyToClipboard(meetingId, 'id')} className="flex-shrink-0 px-3 flex items-center justify-center bg-white border border-green-200 text-green-700 hover:bg-green-100 rounded transition-colors">
                           {isIdCopied ? <CheckIcon /> : <CopyIcon />}
                         </button>
                       </div>
                     </div>
 
-                    {/* Row 2: Full Link (Secondary for sharing) */}
+                    {/* Invite Link */}
                     <div>
                       <p className="text-xs text-green-700 font-semibold mb-1 uppercase tracking-wider">Invite Link</p>
                       <div className="flex gap-2">
-                        <input 
-                          readOnly 
-                          value={meetingLink} 
-                          className="flex-1 bg-white/50 border border-green-200 text-green-800 text-xs p-2 rounded truncate"
-                        />
-                        <button
-                          onClick={() => copyToClipboard(meetingLink, 'link')}
-                          className="flex-shrink-0 px-3 flex items-center justify-center bg-white border border-green-200 text-green-700 hover:bg-green-100 rounded transition-colors"
-                          title="Copy Link"
-                        >
+                        <input readOnly value={meetingLink} className="flex-1 bg-white/50 border border-green-200 text-green-800 text-xs p-2 rounded truncate" />
+                        <button onClick={() => copyToClipboard(meetingLink, 'link')} className="flex-shrink-0 px-3 flex items-center justify-center bg-white border border-green-200 text-green-700 hover:bg-green-100 rounded transition-colors">
                           {isLinkCopied ? <CheckIcon /> : <CopyIcon />}
                         </button>
                       </div>
@@ -219,7 +242,7 @@ const Dashboard = () => {
                   </div>
 
                   <button
-                    onClick={() => joinMeeting()}
+                    onClick={joinCreatedMeeting}
                     className="w-full h-12 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors shadow-sm"
                   >
                     Join Now

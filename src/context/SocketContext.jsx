@@ -14,7 +14,7 @@ export const SocketProvider = ({ children }) => {
     if (!token) return;
 
     // Create socket connection
-    const newSocket = io("https://videocallbackend.dairykhatabook.online", {
+    const newSocket = io(process.env.REACT_APP_BACKEND_URL, {
       auth: { token },
     });
 
